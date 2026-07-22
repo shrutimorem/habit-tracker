@@ -40,6 +40,8 @@ function onOpen() {
     .addSeparator()
     .addItem("Enable Daily Reminder (8 PM)", "enableDailyReminder")
     .addItem("Disable Daily Reminder", "disableDailyReminder")
+    .addSeparator()
+    .addItem("Refresh Streak", "refreshStreakCard")
     .addToUi();
 }
 
@@ -104,78 +106,121 @@ function buildOverviewSheet(ss) {
   let sheet = ss.getSheetByName("Overview");
   if (!sheet) sheet = ss.insertSheet("Overview", 0);
   sheet.clear();
+  sheet.clearConditionalFormatRules();
   sheet.setHiddenGridlines(true);
 
-  sheet.setColumnWidth(1, 180);
-  sheet.setColumnWidth(2, 120);
-  sheet.setColumnWidth(4, 180);
-  sheet.setColumnWidth(5, 120);
-  sheet.setRowHeight(1, 35);
-  sheet.setRowHeight(2, 35);
-  sheet.setRowHeight(4, 30);
+  // Muted, professional palette — one accent color, greys for structure.
+  const ACCENT = "#1E3A5F";     // deep slate blue
+  const ACCENT_LIGHT = "#EAF1F8";
+  const TEXT_DARK = "#1F2937";
+  const TEXT_GREY = "#6B7280";
+  const BORDER_GREY = "#E2E5E9";
 
-  // ===== TITLE =====
-  sheet.getRange("A1:H2").merge()
-    .setValue("🌟 ULTIMATE HABIT TRACKER " + getYear())
-    .setFontSize(22).setFontWeight("bold")
-    .setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setBackground("#2F3E9E").setFontColor("white");
+  sheet.setColumnWidth(1, 26);   // left margin
+  sheet.setColumnWidth(2, 150);
+  sheet.setColumnWidth(3, 150);
+  sheet.setColumnWidth(4, 26);   // gap
+  sheet.setColumnWidth(5, 150);
+  sheet.setColumnWidth(6, 150);
+  sheet.setColumnWidth(7, 26);   // gap
+  sheet.setColumnWidth(8, 150);
+  sheet.setColumnWidth(9, 150);
 
-  // ===== OVERALL STATS =====
-  sheet.getRange("A4").setValue("Overall Statistics").setFontSize(14).setFontWeight("bold");
-  sheet.getRange("A6").setValue("Current Year");
-  sheet.getRange("B6").setValue(getYear()).setNumberFormat("0");
-  sheet.getRange("A7").setValue("Total Habits");
-  sheet.getRange("B7").setValue(getHabits().length).setNumberFormat("0");
-  sheet.getRange("A8").setValue("Average Completion");
-  // Month table lives in rows 12-23 (12 months) — this range must match that.
-  sheet.getRange("B8").setFormula("=AVERAGE(B12:B23)").setNumberFormat("0%");
-  sheet.getRange("B6:B7").setHorizontalAlignment("left");
+  // ===== HEADER BAR =====
+  sheet.setRowHeight(1, 46);
+  sheet.getRange(1, 1, 1, 8).merge()
+    .setValue("  Ultimate Habit Tracker   ·   " + getYear())
+    .setFontSize(16).setFontWeight("bold").setFontColor("white")
+    .setFontFamily("Arial")
+    .setHorizontalAlignment("left").setVerticalAlignment("middle")
+    .setBackground(ACCENT);
 
-  // ===== MONTH TABLE =====
-  sheet.getRange("A11:C11").setValues([["Month", "Progress", "Visual"]])
-    .setBackground(CONFIG.HEADER_COLOR).setFontColor("white").setFontWeight("bold");
+  // ===== SECTION LABEL: OVERVIEW =====
+  sheet.getRange("B3").setValue("OVERVIEW")
+    .setFontSize(10).setFontWeight("bold").setFontColor(TEXT_GREY)
+    .setFontFamily("Arial");
+  sheet.getRange(3, 2, 1, 6).setBorder(false, false, true, false, false, false, BORDER_GREY, SpreadsheetApp.BorderStyle.SOLID);
+
+  // ===== STAT CARDS (2x2 grid, muted, thin accent top-border) =====
+  const cardRows = [4, 4, 4, 7, 7];
+  const cardCols = [2, 5, 8, 2, 5];
+  const cardLabels = ["YEAR", "TOTAL HABITS", "CURRENT STREAK", "AVG COMPLETION", "BEST MONTH"];
+  const streakDays = calculateStreak();
+  const cardValueFormulas = [
+    String(getYear()),
+    String(getHabits().length),
+    streakDays + (streakDays === 1 ? " day" : " days"),
+    `=TEXT(AVERAGE(C13:C24),"0%")`,
+    `=IFERROR(INDEX(B13:B24, MATCH(MAX(C13:C24), C13:C24, 0)), "—")`
+  ];
+
+  for (let i = 0; i < 4; i++) {
+    const r = cardRows[i], c = cardCols[i];
+
+    // Border the whole 2x2 card area BEFORE merging its two rows separately —
+    // merging the entire block into one cell was the bug: writing to what
+    // used to be the "value" row afterward had no real cell to land in.
+    sheet.getRange(r, c, 2, 2)
+      .setBackground("white")
+      .setBorder(true, true, true, true, false, false, BORDER_GREY, SpreadsheetApp.BorderStyle.SOLID);
+    sheet.getRange(r, c, 1, 2)
+      .setBorder(true, null, null, null, false, false, ACCENT, SpreadsheetApp.BorderStyle.SOLID_THICK);
+
+    const labelRange = sheet.getRange(r, c, 1, 2);
+    labelRange.merge().setValue(cardLabels[i])
+      .setFontSize(9).setFontWeight("bold").setFontColor(TEXT_GREY).setFontFamily("Arial")
+      .setVerticalAlignment("bottom");
+
+    const valueRange = sheet.getRange(r + 1, c, 1, 2);
+    valueRange.merge();
+    if (String(cardValueFormulas[i]).startsWith("=")) {
+      valueRange.setFormula(cardValueFormulas[i]);
+    } else {
+      valueRange.setValue(cardValueFormulas[i]);
+    }
+    valueRange.setFontSize(20).setFontWeight("bold").setFontColor(TEXT_DARK).setFontFamily("Arial")
+      .setVerticalAlignment("top");
+  }
+  sheet.setRowHeight(4, 22);
+  sheet.setRowHeight(5, 32);
+  sheet.setRowHeight(7, 22);
+  sheet.setRowHeight(8, 32);
+
+  // ===== SECTION LABEL: MONTHLY PROGRESS =====
+  sheet.getRange("B11").setValue("MONTHLY PROGRESS")
+    .setFontSize(10).setFontWeight("bold").setFontColor(TEXT_GREY)
+    .setFontFamily("Arial");
+  sheet.getRange(11, 2, 1, 6).setBorder(false, false, true, false, false, false, BORDER_GREY, SpreadsheetApp.BorderStyle.SOLID);
+
+  // ===== MONTH TABLE (clean: month, %, single color-scaled progress bar) =====
+  const tableHeaderRow = 12;
+  sheet.getRange(tableHeaderRow, 2, 1, 2).setValues([["Month", "Completion"]])
+    .setBackground(ACCENT).setFontColor("white").setFontWeight("bold").setFontFamily("Arial");
 
   const monthNameRows = CONFIG.MONTH_NAMES.map(m => [m]);
-  sheet.getRange(12, 1, monthNameRows.length, 1).setValues(monthNameRows);
+  sheet.getRange(13, 2, monthNameRows.length, 1).setValues(monthNameRows).setFontFamily("Arial");
 
   const progressFormulas = CONFIG.MONTH_NAMES.map(m => [`=IFERROR('${m}'!J1,0)`]);
-  sheet.getRange(12, 2, progressFormulas.length, 1).setValues(progressFormulas).setNumberFormat("0%");
+  const progressRange = sheet.getRange(13, 3, progressFormulas.length, 1);
+  progressRange.setValues(progressFormulas).setNumberFormat("0%").setFontFamily("Arial");
 
-  const visualFormulas = CONFIG.MONTH_NAMES.map((m, i) => {
-    const row = 12 + i;
-    return [`=REPT("🟩",ROUND(B${row}*10))&REPT("⬜",10-ROUND(B${row}*10))`];
-  });
-  sheet.getRange(12, 3, visualFormulas.length, 1).setValues(visualFormulas);
+  // A single, subtle horizontal bar per month instead of emoji squares —
+  // built as a colored rectangle whose width mirrors the % via a formula,
+  // achieved by overlaying a background color-scale on the % cell itself.
+  const barColorRule = SpreadsheetApp.newConditionalFormatRule()
+    .setGradientMinpointWithValue("#F3F4F6", SpreadsheetApp.InterpolationType.NUMBER, "0")
+    .setGradientMidpointWithValue("#93C5FD", SpreadsheetApp.InterpolationType.NUMBER, "0.5")
+    .setGradientMaxpointWithValue(ACCENT, SpreadsheetApp.InterpolationType.NUMBER, "1")
+    .setRanges([progressRange])
+    .build();
+  sheet.setConditionalFormatRules([barColorRule]);
 
-  sheet.autoResizeColumns(1, 2);
+  const tableRange = sheet.getRange(tableHeaderRow, 2, 13, 2);
+  tableRange.setBorder(true, true, true, true, true, true, BORDER_GREY, SpreadsheetApp.BorderStyle.SOLID);
+  sheet.getRange(13, 2, 12, 2).applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false);
 
-  // ===== DASHBOARD CARDS =====
-  sheet.getRange("D4:E5").merge().setValue("📅 YEAR\n" + getYear())
-    .setBackground("#E3F2FD").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
-
-  sheet.getRange("D7:E8").merge().setValue("✅ HABITS\n" + getHabits().length)
-    .setBackground("#E8F5E9").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
-
-  sheet.getRange("G4:H5").merge()
-    .setFormula('="📊 PROGRESS"&CHAR(10)&TEXT(B8,"0%")')
-    .setBackground("#FFF8E1").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
-
-  sheet.getRange("D10:E11").merge().setValue("🎯 MONTHLY GOAL\n85%")
-    .setBackground("#E8F5E9").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
-
-  sheet.getRange("G10:H11").merge()
-    .setFormula('=IF(B8>=0.85,"🏆 Excellent",IF(B8>=0.70,"😊 Good","💪 Keep Going"))')
-    .setBackground("#E3F2FD").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
-
-  sheet.getRange("G7:H8").merge().setValue("🔥 STREAK\nComing Soon")
-    .setBackground("#FCE4EC").setHorizontalAlignment("center").setVerticalAlignment("middle")
-    .setFontWeight("bold").setFontSize(14);
+  sheet.setColumnWidth(2, 130);
+  sheet.setColumnWidth(3, 100);
 }
 
 // Row where each month's "Progress %" line lives — depends on how many
@@ -209,6 +254,11 @@ function buildMonthSheet(ss, monthName, monthIndex) {
 
   sheet.clear();
   sheet.clearConditionalFormatRules();
+  // sheet.clear() clears content/formatting but NOT data validations — checkboxes
+  // are implemented as a data validation rule, so without this, any leftover
+  // checkbox columns from a previous run (e.g. before a column-count fix) stick
+  // around forever as "ghost" checkboxes with no header above them.
+  sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearDataValidations();
 
   // Expand columns if needed (new sheets default to only 26 columns)
   const neededCols = lastDataCol + 3;
@@ -217,18 +267,21 @@ function buildMonthSheet(ss, monthName, monthIndex) {
     sheet.insertColumnsAfter(currentCols, neededCols - currentCols);
   }
 
-  // ---- Title + top stats (one batched row) ----
-  sheet.getRange(1, 1, 1, 10).setValues([[
-    monthName + " " + getYear(), "", "", "",
-    "Habits", `=COUNTA($A$5:$A$${lastHabitRow})`,
-    "Completed", `=COUNTIF($B$5:${columnLetter(lastDataCol)}$${lastHabitRow},TRUE)`,
-    "Progress %", `=IFERROR(H1/(F1*${daysInMonth}),0)`
-  ]]);
-  sheet.getRange("A1").setFontSize(16).setFontWeight("bold").setFontColor(CONFIG.TITLE_COLOR);
-  sheet.getRange("E1").setFontWeight("bold");
-  sheet.getRange("G1").setFontWeight("bold");
-  sheet.getRange("I1").setFontWeight("bold");
-  sheet.getRange("J1").setNumberFormat("0%");
+  // ---- Title + hidden stat cells (F1/H1/J1 kept as real numbers — Overview reads J1) ----
+  sheet.getRange("A1").setValue(monthName + " " + getYear())
+    .setFontSize(16).setFontWeight("bold").setFontColor(CONFIG.TITLE_COLOR);
+  sheet.getRange("F1").setFormula(`=COUNTA($A$5:$A$${lastHabitRow})`);
+  sheet.getRange("H1").setFormula(`=COUNTIF($B$5:${columnLetter(lastDataCol)}$${lastHabitRow},TRUE)`);
+  sheet.getRange("J1").setFormula(`=IFERROR(H1/(F1*${daysInMonth}),0)`).setNumberFormat("0%");
+
+  // Readable summary line in row 2 — merged across columns C-H so it gets enough
+  // width WITHOUT widening any individual day-checkbox column (which would make
+  // some days visually wider than others). Starts at column C (not B) so the
+  // merge stays fully outside the frozen-columns zone (A-B are frozen).
+  sheet.getRange(2, 3, 1, 6).merge()
+    .setFormula('="Habits: "&F1&"    Completed: "&H1&"    Progress: "&TEXT(J1,"0%")')
+    .setFontSize(10).setFontColor("#6B7280").setFontFamily("Arial")
+    .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
   // ---- Day headers: weekday row(3) + date row(4), weekend gets a red tint ----
   const weekdayRow = [];
@@ -326,13 +379,6 @@ function buildMonthSheet(ss, monthName, monthIndex) {
     .setVerticalAlignment("top").setWrap(true);
   focusBox.setBorder(true, true, true, true, false, false);
 
-  // ---- Daily Reflections row ----
-  const reflectRow = incompleteRow + 2;
-  sheet.getRange(reflectRow, 1).setValue("Daily Reflections").setFontWeight("bold")
-    .setBackground(CONFIG.HEADER_COLOR).setFontColor("white");
-  sheet.getRange(reflectRow + 1, firstDataCol, 1, daysInMonth)
-    .setBorder(true, true, true, true, true, true);
-
   // ---- Column widths / freeze ----
   sheet.setColumnWidth(1, 160);
   sheet.setColumnWidths(firstDataCol, daysInMonth, 28);
@@ -345,7 +391,7 @@ function buildMonthSheet(ss, monthName, monthIndex) {
   const today = new Date();
   if (today.getFullYear() === getYear() && today.getMonth() === monthIndex) {
     const todayCol = firstDataCol + today.getDate() - 1;
-    const highlightHeight = (reflectRow + 1) - 3 + 1;
+    const highlightHeight = incompleteRow - 3 + 1;
     sheet.getRange(3, todayCol, highlightHeight, 1)
       .setBorder(true, true, true, true, false, false, "blue", SpreadsheetApp.BorderStyle.SOLID_THICK);
   }
@@ -383,11 +429,29 @@ function buildHeatmapSheet(ss) {
     sheet.insertColumnsAfter(sheet.getMaxColumns(), neededCols - sheet.getMaxColumns());
   }
 
-  const HEATMAP_FIRST_ROW = 4; // rows 4-10 = Sun..Sat
+  const HEATMAP_FIRST_ROW = 4; // rows 4-10 = Sun..Sat (row 3 is reserved for month labels)
   const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   sheet.getRange(HEATMAP_FIRST_ROW, 1, 7, 1)
     .setValues(dayLabels.map(d => [d]))
     .setFontWeight("bold");
+
+  // Month labels: place an abbreviation ("Jan", "Feb"...) at the first week-column
+  // where each month begins, GitHub-calendar style.
+  const monthLabels = new Array(totalWeeks).fill("");
+  let lastMonthPlaced = -1;
+  for (let d = 0; d < totalDays; d++) {
+    const date = new Date(year, 0, 1 + d);
+    const cellIndex = startWeekday + d;
+    const col = Math.floor(cellIndex / 7);
+    if (date.getMonth() !== lastMonthPlaced) {
+      monthLabels[col] = Utilities.formatDate(date, Session.getScriptTimeZone(), "MMM");
+      lastMonthPlaced = date.getMonth();
+    }
+  }
+  sheet.getRange(HEATMAP_FIRST_ROW - 1, 2, 1, totalWeeks)
+    .setValues([monthLabels])
+    .setFontWeight("bold")
+    .setFontColor(CONFIG.TITLE_COLOR);
 
   // Build the whole formula grid in memory first, write it in one batch call
   const grid = [];
@@ -405,7 +469,12 @@ function buildHeatmapSheet(ss) {
 
   const heatRange = sheet.getRange(HEATMAP_FIRST_ROW, 2, 7, totalWeeks);
   heatRange.setValues(grid);
-  heatRange.setNumberFormat("0%").setHorizontalAlignment("center");
+  // ";;;" is a custom number format with every section empty — hides the
+  // displayed value entirely (GitHub's graph shows colored squares, no text).
+  // The underlying number is untouched, so conditional-format coloring still works.
+  heatRange.setNumberFormat(";;;").setHorizontalAlignment("center");
+  // White borders between cells create the visible "gap" GitHub's graph has.
+  heatRange.setBorder(true, true, true, true, true, true, "white", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 
   // Color scale: light grey (0%) -> light green (50%) -> dark green (100%)
   const colorRule = SpreadsheetApp.newConditionalFormatRule()
@@ -423,8 +492,8 @@ function buildHeatmapSheet(ss) {
   sheet.getRange(legendRow, 6).setValue("More");
 
   sheet.setColumnWidth(1, 50);
-  sheet.setColumnWidths(2, totalWeeks, 20);
-  for (let r = 0; r < 7; r++) sheet.setRowHeight(HEATMAP_FIRST_ROW + r, 20);
+  sheet.setColumnWidths(2, totalWeeks, 24);
+  for (let r = 0; r < 7; r++) sheet.setRowHeight(HEATMAP_FIRST_ROW + r, 24);
 }
 
 /**
@@ -538,6 +607,8 @@ function checkAndSendReminder() {
   const today = new Date();
   if (today.getFullYear() !== getYear()) return; // tracker isn't built for this year
 
+  updateStreakCard();
+
   const monthName = CONFIG.MONTH_NAMES[today.getMonth()];
   const sheet = ss.getSheetByName(monthName);
   if (!sheet) return;
@@ -584,6 +655,65 @@ function disableDailyReminder() {
       ScriptApp.deleteTrigger(t);
     }
   });
+}
+
+/**
+ * Counts consecutive days, walking backward from today, where every habit
+ * was checked. Stops at the first day that isn't 100% complete (or has no
+ * data yet). Crosses month-sheet boundaries automatically.
+ */
+function calculateStreak() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const year = getYear();
+  const today = new Date();
+  if (today.getFullYear() !== year) return 0;
+
+  const habitCount = getHabits().length;
+  const firstHabitRow = 5;
+  const firstDataCol = 2;
+  let streak = 0;
+  const cursor = new Date(today);
+
+  while (streak < 1000) { // safety cap, avoids any risk of an infinite loop
+    const monthName = CONFIG.MONTH_NAMES[cursor.getMonth()];
+    const sheet = ss.getSheetByName(monthName);
+    if (!sheet) break;
+
+    const col = firstDataCol + cursor.getDate() - 1;
+    let values;
+    try {
+      values = sheet.getRange(firstHabitRow, col, habitCount, 1).getValues();
+    } catch (e) {
+      break; // sheet not built yet for this date — streak stops here
+    }
+    const allDone = values.length > 0 && values.every(row => row[0] === true);
+    if (!allDone) break;
+
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+// Core streak update — no UI calls, so it's safe to run from an automated
+// trigger (SpreadsheetApp.getUi() throws if called outside a user action).
+function updateStreakCard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Overview");
+  if (!sheet) return null;
+  const streakDays = calculateStreak();
+  sheet.getRange(5, 8).setValue(streakDays + (streakDays === 1 ? " day" : " days"));
+  return streakDays;
+}
+
+// Menu action version — same update, plus a confirmation popup for the user
+function refreshStreakCard() {
+  const streakDays = updateStreakCard();
+  if (streakDays === null) {
+    SpreadsheetApp.getUi().alert("Build the tracker first.");
+  } else {
+    SpreadsheetApp.getUi().alert(`Current streak: ${streakDays} day(s).`);
+  }
 }
 
 function columnLetter(col) {
