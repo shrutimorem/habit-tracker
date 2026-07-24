@@ -24,8 +24,8 @@ const CONFIG = {
   ],
   MONTH_NAMES: ["January","February","March","April","May","June",
                 "July","August","September","October","November","December"],
-  WEEK_COLORS: ["#F9C9D2","#FBE0B4","#C8E6C9","#BBDEFB","#D7BDE2"],
-  WEEKEND_COLOR: "#FFCDD2",
+  WEEKDAY_COLOR: "#DCE6F1",  // light blue — Mon-Fri
+  WEEKEND_COLOR: "#F5B7B1",  // light coral — Sat-Sun, clearly different hue
   HEADER_COLOR: "#4A4A6A",
   TITLE_COLOR: "#2F3E9E"
 };
@@ -37,11 +37,15 @@ function onOpen() {
     .addItem("Change Year & Rebuild...", "changeYear")
     .addSeparator()
     .addItem("Add New Habit...", "addNewHabit")
+    .addItem("Rename Habit...", "renameHabit")
+    .addItem("Delete Habit...", "deleteHabit")
+    .addItem("Reset Habits to Default...", "resetHabitsToDefault")
     .addSeparator()
     .addItem("Enable Daily Reminder (8 PM)", "enableDailyReminder")
     .addItem("Disable Daily Reminder", "disableDailyReminder")
     .addSeparator()
     .addItem("Refresh Streak", "refreshStreakCard")
+    .addItem("Move Today's Highlight", "refreshTodayHighlight")
     .addToUi();
 }
 
@@ -52,7 +56,13 @@ function getHabits() {
   if (stored) {
     try {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      // Sanity check: must be a reasonable array of plain strings. Without this,
+      // a corrupted property (e.g. from a bad script run) could silently make
+      // habitCount huge, which then produces nonsense COUNTIF ranges everywhere.
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.length <= 50 &&
+          parsed.every(h => typeof h === "string" && h.length > 0)) {
+        return parsed;
+      }
     } catch (e) { /* fall through to default below */ }
   }
   return CONFIG.DEFAULT_HABITS.slice();
@@ -84,13 +94,14 @@ function changeYear() {
     return;
   }
   PropertiesService.getScriptProperties().setProperty("YEAR", String(year));
-  buildHabitTracker();
+  buildHabitTracker(false); // false = don't carry over old checkmarks; a new year starts blank
 }
 
-function buildHabitTracker() {
+function buildHabitTracker(preserveData) {
+  if (preserveData === undefined) preserveData = true; // default: normal rebuilds keep existing data
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   buildOverviewSheet(ss);
-  CONFIG.MONTH_NAMES.forEach((name, idx) => buildMonthSheet(ss, name, idx));
+  CONFIG.MONTH_NAMES.forEach((name, idx) => buildMonthSheet(ss, name, idx, preserveData));
   buildHeatmapSheet(ss);
   removeDefaultSheet(ss);
   ss.setActiveSheet(ss.getSheetByName("Overview"));
@@ -230,7 +241,8 @@ function getProgressRow() {
   return getHabits().length + 6;
 }
 
-function buildMonthSheet(ss, monthName, monthIndex) {
+function buildMonthSheet(ss, monthName, monthIndex, preserveData) {
+  if (preserveData === undefined) preserveData = true;
   let sheet = ss.getSheetByName(monthName);
   if (!sheet) sheet = ss.insertSheet(monthName);
 
@@ -243,13 +255,16 @@ function buildMonthSheet(ss, monthName, monthIndex) {
 
   // Preserve any already-checked boxes before wiping the sheet — sheet.clear()
   // erases everything, so without this a rebuild would silently lose all
-  // tracked days. Only restorable when habit count/day count line up with
-  // what's already there; if not (brand-new sheet, size mismatch), skip safely.
+  // tracked days. Skipped entirely on a year change (preserveData=false),
+  // since a new year's checkboxes should start blank, not inherit the old
+  // year's ticks at the same day-of-month position.
   let savedGrid = null;
-  try {
-    savedGrid = sheet.getRange(firstHabitRow, firstDataCol, habitCount, daysInMonth).getValues();
-  } catch (e) {
-    savedGrid = null;
+  if (preserveData) {
+    try {
+      savedGrid = sheet.getRange(firstHabitRow, firstDataCol, habitCount, daysInMonth).getValues();
+    } catch (e) {
+      savedGrid = null;
+    }
   }
 
   sheet.clear();
@@ -274,13 +289,15 @@ function buildMonthSheet(ss, monthName, monthIndex) {
   sheet.getRange("H1").setFormula(`=COUNTIF($B$5:${columnLetter(lastDataCol)}$${lastHabitRow},TRUE)`);
   sheet.getRange("J1").setFormula(`=IFERROR(H1/(F1*${daysInMonth}),0)`).setNumberFormat("0%");
 
-  // Readable summary line in row 2 — merged across columns C-H so it gets enough
+  // Readable summary line in row 2 — merged across columns C-J so it gets enough
   // width WITHOUT widening any individual day-checkbox column (which would make
   // some days visually wider than others). Starts at column C (not B) so the
-  // merge stays fully outside the frozen-columns zone (A-B are frozen).
-  sheet.getRange(2, 3, 1, 6).merge()
-    .setFormula('="Habits: "&F1&"    Completed: "&H1&"    Progress: "&TEXT(J1,"0%")')
-    .setFontSize(10).setFontColor("#6B7280").setFontFamily("Arial")
+  // merge stays fully outside the frozen-columns zone (A-B are frozen). Explicit
+  // white background stops it from visually blending into the colored day-header
+  // row right below it.
+  sheet.getRange(2, 3, 1, 8).merge()
+    .setFormula('="Habits: "&F1&"   |   Done: "&H1&"   |   Progress: "&TEXT(J1,"0%")')
+    .setFontSize(10).setFontColor("#6B7280").setFontFamily("Arial").setBackground("white")
     .setHorizontalAlignment("left").setVerticalAlignment("middle");
 
   // ---- Day headers: weekday row(3) + date row(4), weekend gets a red tint ----
@@ -292,8 +309,7 @@ function buildMonthSheet(ss, monthName, monthIndex) {
     weekdayRow.push(Utilities.formatDate(date, Session.getScriptTimeZone(), "EEE"));
     dateRow.push(d);
     const isWeekend = (date.getDay() === 0 || date.getDay() === 6);
-    const weekIndex = Math.floor((d - 1) / 7) % CONFIG.WEEK_COLORS.length;
-    dayColors.push(isWeekend ? CONFIG.WEEKEND_COLOR : CONFIG.WEEK_COLORS[weekIndex]);
+    dayColors.push(isWeekend ? CONFIG.WEEKEND_COLOR : CONFIG.WEEKDAY_COLOR);
   }
   const headerRange3 = sheet.getRange(3, firstDataCol, 1, daysInMonth);
   const headerRange4 = sheet.getRange(4, firstDataCol, 1, daysInMonth);
@@ -547,6 +563,113 @@ function addNewHabit() {
 }
 
 /**
+ * Deletes a habit from every month sheet by removing its row directly —
+ * every other habit's checked days are untouched.
+ */
+function deleteHabit() {
+  const ui = SpreadsheetApp.getUi();
+  const habits = getHabits();
+
+  if (habits.length <= 1) {
+    ui.alert("Can't delete the last remaining habit.");
+    return;
+  }
+
+  const response = ui.prompt(
+    "Delete Habit",
+    "Enter the exact name of the habit to delete:\n\n" + habits.join(", "),
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const name = response.getResponseText().trim();
+  const idx = habits.indexOf(name);
+  if (idx === -1) {
+    ui.alert("Habit not found — check the spelling exactly as shown in the list.");
+    return;
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const firstHabitRow = 5;
+  const rowToDelete = firstHabitRow + idx;
+
+  habits.splice(idx, 1);
+  saveHabits(habits);
+
+  CONFIG.MONTH_NAMES.forEach((monthName, monthIndex) => {
+    const sheet = ss.getSheetByName(monthName);
+    if (!sheet) return;
+    sheet.deleteRow(rowToDelete);
+    refreshMonthTotals(sheet, monthIndex, habits.length);
+  });
+
+  ui.alert(`"${name}" deleted from all 12 months.`);
+}
+
+/**
+ * Renames a habit in every month sheet (just updates the label — the
+ * checkbox grid position and all checked data stay exactly where they are).
+ */
+function renameHabit() {
+  const ui = SpreadsheetApp.getUi();
+  const habits = getHabits();
+
+  const response1 = ui.prompt(
+    "Rename Habit",
+    "Enter the exact current name of the habit:\n\n" + habits.join(", "),
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response1.getSelectedButton() !== ui.Button.OK) return;
+
+  const oldName = response1.getResponseText().trim();
+  const idx = habits.indexOf(oldName);
+  if (idx === -1) {
+    ui.alert("Habit not found — check the spelling exactly as shown in the list.");
+    return;
+  }
+
+  const response2 = ui.prompt(
+    "Rename Habit",
+    `Enter the new name for "${oldName}":`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response2.getSelectedButton() !== ui.Button.OK) return;
+
+  const newName = response2.getResponseText().trim();
+  if (!newName) { ui.alert("Please enter a name."); return; }
+
+  habits[idx] = newName;
+  saveHabits(habits);
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const row = 5 + idx; // firstHabitRow + idx
+  CONFIG.MONTH_NAMES.forEach(monthName => {
+    const sheet = ss.getSheetByName(monthName);
+    if (!sheet) return;
+    sheet.getRange(row, 1).setValue(newName);
+  });
+
+  ui.alert(`Renamed "${oldName}" to "${newName}" in all 12 months.`);
+}
+
+/**
+ * Recovery action: resets the habit list back to the original 8 defaults
+ * and does a full rebuild. Use this if the habit list ever gets corrupted
+ * (e.g. showing huge nonsense numbers in the Complete/Incomplete rows).
+ */
+function resetHabitsToDefault() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    "Reset Habits",
+    "This resets your habit list to the original 8 defaults and rebuilds everything. Continue?",
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) return;
+  saveHabits(CONFIG.DEFAULT_HABITS.slice());
+  buildHabitTracker(false);
+}
+
+/**
  * Recomputes the row-1 stats, Progress/Complete/Incomplete formulas, and
  * conditional formatting for a month sheet to match a new habit count —
  * without touching the checkbox grid itself.
@@ -643,15 +766,22 @@ function enableDailyReminder() {
     .everyDays(1)
     .atHour(20) // Apps Script runs this within an hour window around 8 PM
     .create();
+  ScriptApp.newTrigger("refreshTodayHighlight")
+    .timeBased()
+    .everyDays(1)
+    .atHour(1) // just after midnight, so the highlight moves early each day
+    .create();
   SpreadsheetApp.getUi().alert(
-    "Daily reminder enabled. You'll get an email around 8 PM if any habits are still unchecked."
+    "Daily reminder enabled. You'll get an email around 8 PM if any habits are still unchecked, " +
+    "and the today-highlight will move to the new date automatically each night."
   );
 }
 
 function disableDailyReminder() {
   const triggers = ScriptApp.getProjectTriggers();
   triggers.forEach(t => {
-    if (t.getHandlerFunction() === "checkAndSendReminder") {
+    const fn = t.getHandlerFunction();
+    if (fn === "checkAndSendReminder" || fn === "refreshTodayHighlight") {
       ScriptApp.deleteTrigger(t);
     }
   });
@@ -662,6 +792,45 @@ function disableDailyReminder() {
  * was checked. Stops at the first day that isn't 100% complete (or has no
  * data yet). Crosses month-sheet boundaries automatically.
  */
+/**
+ * Moves the blue "today" border to the current date, without touching
+ * anything else — clears yesterday's border (tracked via a Script Property)
+ * and draws today's. Meant to run once a day via a trigger, or on demand.
+ */
+function refreshTodayHighlight() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const year = getYear();
+  const today = new Date();
+  if (today.getFullYear() !== year) return; // tracker isn't built for this year
+
+  const firstDataCol = 2;
+  const highlightHeight = (getProgressRow() + 2) - 3 + 1; // rows 3 through Incomplete row
+
+  // Remove yesterday's highlight (if we have a record of where it was)
+  const lastStr = PropertiesService.getScriptProperties().getProperty("LAST_HIGHLIGHT_DATE");
+  if (lastStr) {
+    const lastDate = new Date(lastStr);
+    if (lastDate.getFullYear() === year) {
+      const lastSheet = ss.getSheetByName(CONFIG.MONTH_NAMES[lastDate.getMonth()]);
+      if (lastSheet) {
+        const lastCol = firstDataCol + lastDate.getDate() - 1;
+        lastSheet.getRange(3, lastCol, highlightHeight, 1)
+          .setBorder(false, false, false, false, false, false);
+      }
+    }
+  }
+
+  // Draw today's highlight
+  const sheet = ss.getSheetByName(CONFIG.MONTH_NAMES[today.getMonth()]);
+  if (sheet) {
+    const todayCol = firstDataCol + today.getDate() - 1;
+    sheet.getRange(3, todayCol, highlightHeight, 1)
+      .setBorder(true, true, true, true, false, false, "blue", SpreadsheetApp.BorderStyle.SOLID_THICK);
+  }
+
+  PropertiesService.getScriptProperties().setProperty("LAST_HIGHLIGHT_DATE", today.toDateString());
+}
+
 function calculateStreak() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const year = getYear();
